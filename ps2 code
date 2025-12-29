@@ -1,0 +1,121 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# PARAMETERS
+m_s = 290.0
+m_u = 59.0
+k_s = 16000.0
+k_t = 190000.0
+
+c_min = 800.0
+c_max = 3500.0
+
+dt = 0.005
+delay_steps = 4
+
+#LOAD DATA 
+data = pd.read_csv("/kaggle/input/the-volatile-cargo-synapse-drive-ps-2/data/road_profiles.csv")
+time = data["t"].values
+profiles = [data[f"profile_{i}"].values for i in range(1, 6)]
+
+#QUARTER CAR MODEL 
+def quarter_car_step(state, r, c):
+    z_s, z_s_dot, z_u, z_u_dot = state
+
+    F_spring = k_s * (z_s - z_u)
+    F_damper = c * (z_s_dot - z_u_dot)
+    F_tire   = k_t * (z_u - r)
+
+    z_s_ddot = (-F_spring - F_damper) / m_s
+    z_u_ddot = (F_spring + F_damper - F_tire) / m_u
+
+    z_s_dot += z_s_ddot * dt
+    z_s     += z_s_dot * dt
+
+    z_u_dot += z_u_ddot * dt
+    z_u     += z_u_dot * dt
+
+    return np.array([z_s, z_s_dot, z_u, z_u_dot]), z_s_ddot, z_u_ddot
+
+
+def controller(a_s, a_u):
+    gain = 500.0
+    c = c_min + gain * abs(a_s - a_u)
+    return np.clip(c, c_min, c_max)
+
+def simulate_profile(road):
+    state = np.zeros(4)
+    c_buffer = [c_min] * delay_steps
+
+    z_s_hist = []
+    z_u_hist = []
+    a_s_hist = []
+
+    prev_a_s = 0.0
+    prev_a_u = 0.0
+
+    for r in road:
+        c_req = controller(prev_a_s, prev_a_u)
+
+        c_buffer.append(c_req)
+        c_applied = c_buffer.pop(0)
+
+        state, a_s, a_u = quarter_car_step(state, r, c_applied)
+
+        z_s_hist.append(state[0])
+        z_u_hist.append(state[2])
+        a_s_hist.append(a_s)
+
+        prev_a_s = a_s
+        prev_a_u = a_u
+
+    return np.array(z_s_hist), np.array(z_u_hist), np.array(a_s_hist)
+
+def compute_metrics(z_s, a_s):
+    z_rel = z_s - z_s[0]
+
+    rms_zs = np.sqrt(np.mean(z_rel**2))
+    max_zs = np.max(np.abs(z_rel))
+
+    jerk = np.diff(a_s) / dt
+    rms_jerk = np.sqrt(np.mean(jerk**2))
+    jerk_max = np.max(np.abs(jerk))
+
+    comfort = 0.5*rms_zs + max_zs + 0.5*rms_jerk + jerk_max
+    return rms_zs, max_zs, rms_jerk, comfort
+
+
+results = []
+
+for i, road in enumerate(profiles):
+    z_s, z_u, a_s = simulate_profile(road)
+    rms_zs, max_zs, rms_jerk, comfort = compute_metrics(z_s, a_s)
+
+    results.append([
+        f"profile_{i+1}",
+        rms_zs,
+        max_zs,
+        rms_jerk,
+        comfort
+    ])
+
+    # Plot displacements
+    plt.figure(figsize=(10, 4))
+    plt.plot(time, z_s, label="Sprung mass")
+    plt.plot(time, z_u, label="Unsprung mass", alpha=0.7)
+    plt.title(f"Road Profile {i+1}")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Displacement (m)")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+
+submission = pd.DataFrame(
+    results,
+    columns=["profile", "rms_zs", "max_zs", "rms_jerk", "comfort_score"]
+)
+
+submission.to_csv("submission.csv", index=False)
+print(" submission.csv generated successfully!")
