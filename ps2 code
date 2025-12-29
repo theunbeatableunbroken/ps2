@@ -118,4 +118,4 @@ submission = pd.DataFrame(
 )
 
 submission.to_csv("submission.csv", index=False)
-print(" submission.csv generated successfully!")
+print(" submission.csv generated ")
